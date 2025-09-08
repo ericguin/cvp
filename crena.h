@@ -120,7 +120,7 @@ void crena_free(crena_arena *arena, crena_free_type free_type) {
 }
 
 void crena_dealloc(crena_arena *arena, size_t size) {
-  if (arena->loc - size >= 0) {
+  if (size >= arena->loc) {
     arena->loc -= size;
   }
 }

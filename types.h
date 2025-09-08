@@ -5,11 +5,11 @@
 #include <stddef.h>
 
 #define _LIST_T(type) typedef struct _##type##_list {\
-    type* items;\
-    size_t count;\
-    size_t capacity;\
-    crena_arena* arena;\
-  } type##_list;
+  type* items;\
+  size_t count;\
+  size_t capacity;\
+  crena_arena* arena;\
+} type##_list;
 
 #define _LL_T(type)\
   typedef struct _##type##_ll_item {\
@@ -100,6 +100,7 @@ typedef struct {
 } vvp_module;
 
 typedef enum {
+  NONE,
 } vvp_toplevel_type;
 
 typedef struct {
