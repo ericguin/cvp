@@ -4,47 +4,11 @@
 #include <stdbool.h>
 #include <stdarg.h>
 
+#define STB_DS_IMPLEMENTATION
+#include "stb_ds.h"
+
 #define CRENA_IMPLEMENTATION
 #include "crena.h"
-
-#define _LIST_T(type) typedef struct _##type##_list {\
-  type* items;\
-  size_t count;\
-  size_t capacity;\
-  crena_arena* arena;\
-} type##_list;
-
-#define _LIST_T_IMPL(type) \
-  void type##_list_push(type##_list* list, type item) {\
-    list->items[list->count] = item;\
-    list->count ++;\
-    if (list->count >= list->capacity) {\
-      crena_dealloc(list->arena, sizeof(type) * list->capacity);\
-      list->capacity *= 2;\
-      crena_alloc(list->arena, sizeof(type) * list->capacity);\
-    }\
-  }\
-  type##_list type##_list_init_capacity(crena_arena* arena, size_t capacity) {\
-    void* mem = crena_alloc(arena, sizeof(type) * capacity);\
-    type##_list ret = {\
-      .arena = arena,\
-      .capacity = 20,\
-      .items = mem\
-    };\
-    return ret;\
-  }\
-  type##_list type##_list_init(crena_arena* arena) {\
-    return type##_list_init_capacity(arena, 20);\
-  }\
-  void type##_list_shrink(type##_list* list) {\
-    size_t diff = list->capacity - list->count;\
-    list->capacity = list->count;\
-    crena_dealloc(list->arena, diff * sizeof(type));\
-  }\
-  type* type##_list_get(type##_list* list, size_t idx) {\
-    if (idx > list->count) return NULL;\
-    return &list->items[idx];\
-  }
 
 typedef struct {
   char const* str;
@@ -57,6 +21,16 @@ typedef struct {
 } str_scanner;
 
 #define STR_PF(s) (int)s.len, s.str
+#define STR_CONST(s) (str){ .str = #s , .len = sizeof(#s) - 1 }
+
+bool str_equal(str a, str b) {
+  if (a.len != b.len) return false;
+  if (a.len == 0) return false;
+  for (size_t i = 0; i < a.len; i ++) {
+    if (a.str[i] != b.str[i]) return false;
+  }
+  return true;
+}
 
 str_scanner str_scanner_init(str input) {
   return (str_scanner) {
@@ -145,9 +119,6 @@ typedef struct {
   port_direction direction;
 } port_info;
 
-_LIST_T(port_info);
-_LIST_T(str);
-
 typedef struct {
   int32_t major;
   int32_t minor;
@@ -156,24 +127,16 @@ typedef struct {
 typedef struct {
   str scope_name;
   timescale ts;
-  port_info_list ports;
+  port_info* ports;
 } vpi_scope;
-
-_LIST_T(vpi_scope);
 
 typedef struct {
   ivl_version version;
   ivl_delay_selection delay_selection;
   vpi_time_precision time_precision;
-  str_list file_names;
-  vpi_scope_list scopes;
+  str* file_names;
+  vpi_scope* scopes;
 } vvp_module;
-
-
-_LIST_T_IMPL(port_info);
-_LIST_T_IMPL(str);
-_LIST_T_IMPL(vpi_scope);
-
 
 str read_entire_file(char const* filename, crena_arena* arena) {
   FILE *file = fopen(filename, "rb");
@@ -210,6 +173,18 @@ str read_entire_file(char const* filename, crena_arena* arena) {
   return result;
 }
 
+struct {
+  str ident_name;
+  bool ini;
+  void(*ini_fn)(vvp_module*);
+  void(*parse_fn)(str_scanner*,vvp_module*);
+} ident_parsers[] = {
+  {
+    .ident_name = STR_CONST(ivl_version),
+    .parse_fn = NULL
+  },
+};
+
 vvp_module bytecode_chunk_str(str bytecode, crena_arena* arena) {
   (void)arena;
   vvp_module ret = {0};
@@ -218,17 +193,19 @@ vvp_module bytecode_chunk_str(str bytecode, crena_arena* arena) {
   while (str_scanner_more(scan)) {
     char front = str_scanner_front(scan);
 
-    switch (front) {
-      case ':': // header entry
-        str_scanner_skipnext(&scan);
-        str identifier = str_scanner_takeuntil(&scan, ' ');
-        printf("Identifier is: %.*s\n", STR_PF(identifier));
-        break;
-      default:
-        break;
+    if (front == ':') { // header entry
+      str_scanner_skipnext(&scan);
+      str identifier = str_scanner_takeuntil(&scan, ' ');
+      printf("Identifier is: %.*s\n", STR_PF(identifier));
+
+      for (size_t i = 0; i < sizeof(ident_parsers) / sizeof(ident_parsers[0]); i ++) {
+        if (str_equal(ident_parsers[i].ident_name, identifier)) {
+          printf("Got an identifier we know: %.*s", STR_PF(ident_parsers[i].ident_name));
+        }
+      }
     }
 
-    str nextline = str_scanner_takeuntil_nextline(&scan);
+    str_scanner_skipuntil_nextline(&scan);
   }
 
   return ret;
