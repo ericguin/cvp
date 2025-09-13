@@ -1,13 +1,14 @@
 #include <stdio.h>
 #include <stdint.h>
+#include <ctype.h>
 #include <stddef.h>
 #include <stdbool.h>
 #include <stdarg.h>
 
-#define STB_DS_IMPLEMENTATION
-#include "stb_ds.h"
-
 #define CRENA_IMPLEMENTATION
+#ifdef UNIT_TEST
+#define CRENA_UT
+#endif
 #include "crena.h"
 
 typedef struct {
@@ -39,12 +40,42 @@ str_scanner str_scanner_init(str input) {
   };
 }
 
-#define str_scanner_front(scan) (scan.base.str[scan.cursor])
+#define str_scanner_front(scan) ((scan).base.str[(scan).cursor])
 #define str_scanner_more(scan) ((scan).cursor <= (scan).base.len)
 
 str str_scanner_takeuntil(str_scanner* scan, char needle) {
   size_t anchor = scan->cursor;
   while (str_scanner_more(*scan) && scan->base.str[scan->cursor] != needle) {
+    scan->cursor++;
+  }
+
+  return (str) {
+    .str = &scan->base.str[anchor],
+    .len = scan->cursor - anchor
+  };
+}
+
+size_t str_scanner_skipwhile(str_scanner* scan, char skip) {
+  size_t anchor = scan->cursor;
+  while (str_scanner_more(*scan) && scan->base.str[scan->cursor] == skip) {
+    scan->cursor++;
+  }
+
+  return scan->cursor - anchor;
+}
+
+size_t str_scanner_skipwhitespace(str_scanner* scan) {
+  size_t anchor = scan->cursor;
+  while (str_scanner_more(*scan) && isspace(scan->base.str[scan->cursor])) {
+    scan->cursor++;
+  }
+
+  return scan->cursor - anchor;
+}
+
+str str_scanner_takeuntilwhitespace(str_scanner* scan) {
+  size_t anchor = scan->cursor;
+  while (str_scanner_more(*scan) && !isspace(scan->base.str[scan->cursor])) {
     scan->cursor++;
   }
 
@@ -61,6 +92,19 @@ bool str_scanner_skipnext(str_scanner* scan) {
   }
 
   return false;
+}
+
+str str_scanner_nexttoken(str_scanner* scan) {
+  str_scanner_skipwhitespace(scan);
+
+  if (str_scanner_front(*scan) == '"') { // we have a quoted string!
+    str_scanner_skipnext(scan);
+    str ret = str_scanner_takeuntil(scan, '"');
+    str_scanner_skipnext(scan);
+    return ret;
+  } else {
+    return str_scanner_takeuntilwhitespace(scan);
+  }
 }
 
 str str_scanner_takeuntil_nextline(str_scanner* scan) {
@@ -151,14 +195,8 @@ str read_entire_file(char const* filename, crena_arena* arena) {
   fseek(file, 0, SEEK_SET);
 
   char *buffer = (char *)crena_alloc(arena, file_size + 1);
-  if (!buffer) {
-    perror("Failed to allocate memory");
-    fclose(file);
-    str result = {NULL, 0};
-    return result;
-  }
-
   size_t read_size = fread(buffer, 1, file_size, file);
+
   if (read_size != file_size) {
     perror("Failed to read file");
     crena_dealloc(arena, file_size);
@@ -173,39 +211,89 @@ str read_entire_file(char const* filename, crena_arena* arena) {
   return result;
 }
 
+#define IVLP_INI_FN(name) void ini_##name(vvp_module* mod, crena_arena* arena)
+#define IVLP_FIN_FN(name) void fin_##name(vvp_module* mod, crena_arena* arena)
+#define IVLP_PARSE_FN(name) void parse_##name(str_scanner* scan, vvp_module* mod, crena_arena* arena)
+
+IVLP_PARSE_FN(ivl_version) {
+  (void)arena;
+  str build = str_scanner_nexttoken(scan);
+  str hash = str_scanner_nexttoken(scan);
+
+  // trim double quotes?
+  mod->version.build = build;
+  mod->version.hash = hash;
+
+  printf("Set module build/version: %.*s | %.*s\n", STR_PF(build), STR_PF(hash));
+}
+
+IVLP_INI_FN(file_names) {
+  crena_da_init(mod->file_names, arena);
+}
+
+IVLP_PARSE_FN(file_names) {
+  (void)arena;
+
+  str snum = str_scanner_nexttoken(scan); // Will include ;
+  int num = atoi(snum.str);
+  for (int i = 0; i < num; i++) {
+    str fname = str_scanner_nexttoken(scan);
+    str_scanner_skipuntil_nextline(scan);
+    crena_da_push(mod->file_names, fname);
+  }
+}
+
+IVLP_FIN_FN(file_names) {
+  (void)arena;
+
+  for (size_t i = 0; i < crena_da_len(mod->file_names); i ++) {
+    printf("File name: %.*s\n", STR_PF(mod->file_names[i]));
+  }
+}
+
 struct {
   str ident_name;
-  bool ini;
-  void(*ini_fn)(vvp_module*);
-  void(*parse_fn)(str_scanner*,vvp_module*);
+  void(*ini_fn)(vvp_module*,crena_arena*);
+  void(*parse_fn)(str_scanner*,vvp_module*,crena_arena*);
+  void(*fin_fn)(vvp_module*,crena_arena*);
 } ident_parsers[] = {
   {
     .ident_name = STR_CONST(ivl_version),
-    .parse_fn = NULL
+    .parse_fn = parse_ivl_version,
   },
+  {
+    .ident_name = STR_CONST(file_names),
+    .ini_fn = ini_file_names,
+    .fin_fn = fin_file_names,
+    .parse_fn = parse_file_names,
+  }
 };
 
 vvp_module bytecode_chunk_str(str bytecode, crena_arena* arena) {
-  (void)arena;
   vvp_module ret = {0};
-  str_scanner scan = str_scanner_init(bytecode);
 
-  while (str_scanner_more(scan)) {
-    char front = str_scanner_front(scan);
+  for (size_t i = 0; i < sizeof(ident_parsers) / sizeof(ident_parsers[0]); i ++) {
+    if (ident_parsers[i].ini_fn) ident_parsers[i].ini_fn(&ret, arena);
 
-    if (front == ':') { // header entry
-      str_scanner_skipnext(&scan);
-      str identifier = str_scanner_takeuntil(&scan, ' ');
-      printf("Identifier is: %.*s\n", STR_PF(identifier));
+    if (ident_parsers[i].parse_fn) {
+      str_scanner scan = str_scanner_init(bytecode);
+      while (str_scanner_more(scan)) {
+        char front = str_scanner_front(scan);
 
-      for (size_t i = 0; i < sizeof(ident_parsers) / sizeof(ident_parsers[0]); i ++) {
-        if (str_equal(ident_parsers[i].ident_name, identifier)) {
-          printf("Got an identifier we know: %.*s", STR_PF(ident_parsers[i].ident_name));
+        if (front == ':') { // header entry
+          str_scanner_skipnext(&scan); // skip :
+          str identifier = str_scanner_nexttoken(&scan);
+
+          if (str_equal(ident_parsers[i].ident_name, identifier)) {
+            ident_parsers[i].parse_fn(&scan, &ret, arena);
+          }
         }
+
+        str_scanner_skipuntil_nextline(&scan);
       }
     }
 
-    str_scanner_skipuntil_nextline(&scan);
+    if (ident_parsers[i].fin_fn) ident_parsers[i].fin_fn(&ret, arena);
   }
 
   return ret;
@@ -224,7 +312,10 @@ int main(int argc, char** argv) {
 #else // All code below is UT
 
 int main(int argc, char** argv) {
+  (void)argc;
+  (void)argv;
   printf("I am unit testing now!\n");
+  crena_unit_test();
 }
 
 #endif
