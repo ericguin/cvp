@@ -126,13 +126,26 @@ typedef struct {
   str hash;
 } ivl_version;
 
+#define X_IVL_DELAY_SELECTION() \
+  XIDS(TYPICAL),
+
+#define XIDS(t) t
+
 typedef enum {
-  TYPICAL,
+  X_IVL_DELAY_SELECTION()
 } IVL_DELAY_SELECTION;
 
-typedef struct {
-  IVL_DELAY_SELECTION selection;
-} ivl_delay_selection;
+#undef XIDS
+
+#define XIDS(t) STR_CONST(t)
+
+str IVL_DELAY_SELECTION_NAMES[] = {
+  X_IVL_DELAY_SELECTION()
+};
+
+#undef XIDS
+
+size_t N_IVL_DELAY_SELECTION = sizeof(IVL_DELAY_SELECTION_NAMES) / sizeof(str);
 
 typedef struct {
   int32_t precision;
@@ -176,7 +189,7 @@ typedef struct {
 
 typedef struct {
   ivl_version version;
-  ivl_delay_selection delay_selection;
+  IVL_DELAY_SELECTION delay_selection;
   vpi_time_precision time_precision;
   str* file_names;
   vpi_scope* scopes;
@@ -251,6 +264,18 @@ IVLP_FIN_FN(file_names) {
   }
 }
 
+IVLP_PARSE_FN(ivl_delay_selection) {
+  (void)arena;
+  str selection = str_scanner_nexttoken(scan);
+  for (size_t i = 0; i < N_IVL_DELAY_SELECTION; i ++) {
+    if (str_equal(selection, IVL_DELAY_SELECTION_NAMES[i])) {
+      printf("Found delay selection: %.*s\n", STR_PF(IVL_DELAY_SELECTION_NAMES[i]));
+      mod->delay_selection = (IVL_DELAY_SELECTION)i;
+      break;
+    }
+  }
+}
+
 struct {
   str ident_name;
   void(*ini_fn)(vvp_module*,crena_arena*);
@@ -260,6 +285,10 @@ struct {
   {
     .ident_name = STR_CONST(ivl_version),
     .parse_fn = parse_ivl_version,
+  },
+  {
+    .ident_name = STR_CONST(ivl_delay_selection),
+    .parse_fn = parse_ivl_delay_selection,
   },
   {
     .ident_name = STR_CONST(file_names),
