@@ -53,12 +53,14 @@ typedef struct {
 
 void* _crena_da_init(size_t esize, crena_arena* arena);
 void* _crena_da_grow(void* daptr, size_t size, size_t count);
+size_t _crena_da_compress(void* da);
 
 #define crena_da_header(da) ((_crena_da_header*)(da) - 1)
 #define crena_da_init(da, arena) (da) = _crena_da_init(sizeof(*da), arena);
 #define crena_da_push(da, itm) ((da) = _crena_da_grow(da, sizeof(*da), 1), (da)[crena_da_header(da)->count++] = (itm))
 #define crena_da_pop(da) (crena_da_header(da)->count--, (da)[crena_da_header(da)->count])
 #define crena_da_len(da) (crena_da_header(da)->count)
+#define crena_da_compress(da) _crena_da_compress(da)
 
 #define CRan(arena, type, count) crena_alloc(arena, sizeof(type) * count)
 #define CRa(arena, type) CRan(arena, type, 1)
@@ -68,6 +70,24 @@ void* _crena_da_grow(void* daptr, size_t size, size_t count);
 
 
 #ifdef CRENA_IMPLEMENTATION
+
+size_t _crena_da_compress(void* da) {
+  _crena_da_header* header = crena_da_header(da);
+  crena_arena* arena = header->arena;
+
+  char* cmem = (char*)header;
+  char* amem = ((char*)arena->mem) + arena->loc;
+  bool can_compress = cmem == (amem - header->capacity);
+
+  if (can_compress) {
+    size_t oldcap = header->capacity;
+    size_t newcap = header->count;
+    crena_dealloc(arena, oldcap - newcap);
+    return oldcap - newcap;
+  }
+
+  return 0;
+}
 
 void* _crena_da_init(size_t esize, crena_arena* arena) {
 #ifdef CRENA_UT

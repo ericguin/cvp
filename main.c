@@ -148,6 +148,7 @@ str IVL_DELAY_SELECTION_NAMES[] = {
 size_t N_IVL_DELAY_SELECTION = sizeof(IVL_DELAY_SELECTION_NAMES) / sizeof(str);
 
 typedef struct {
+  bool direction;
   int32_t precision;
 } vpi_time_precision;
 
@@ -258,7 +259,7 @@ IVLP_PARSE_FN(file_names) {
 
 IVLP_FIN_FN(file_names) {
   (void)arena;
-
+  crena_da_compress(mod->file_names);
   for (size_t i = 0; i < crena_da_len(mod->file_names); i ++) {
     printf("File name: %.*s\n", STR_PF(mod->file_names[i]));
   }
@@ -276,6 +277,20 @@ IVLP_PARSE_FN(ivl_delay_selection) {
   }
 }
 
+IVLP_PARSE_FN(vpi_time_precision) {
+  (void)arena;
+
+  str dir = str_scanner_nexttoken(scan);
+  str mag = str_scanner_nexttoken(scan);
+
+  int imag = atoi(mag.str);
+
+  mod->time_precision.direction = str_equal(dir, STR_CONST(+)) ? true : false;
+  mod->time_precision.precision = imag;
+
+  printf("Found time precision: %d | %d\n", mod->time_precision.direction, mod->time_precision.precision);
+}
+
 struct {
   str ident_name;
   void(*ini_fn)(vvp_module*,crena_arena*);
@@ -289,6 +304,10 @@ struct {
   {
     .ident_name = STR_CONST(ivl_delay_selection),
     .parse_fn = parse_ivl_delay_selection,
+  },
+  {
+    .ident_name = STR_CONST(vpi_time_precision),
+    .parse_fn = parse_vpi_time_precision,
   },
   {
     .ident_name = STR_CONST(file_names),
