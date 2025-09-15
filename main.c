@@ -40,6 +40,9 @@ str_scanner str_scanner_init(str input) {
   };
 }
 
+#define str_front(s) ((s).str[0])
+#define str_back(s) ((s).str[(s).len - 1])
+
 #define str_scanner_front(scan) ((scan).base.str[(scan).cursor])
 #define str_scanner_more(scan) ((scan).cursor <= (scan).base.len)
 
@@ -107,6 +110,12 @@ str str_scanner_nexttoken(str_scanner* scan) {
   }
 }
 
+str str_scanner_peektoken(str_scanner* scan) {
+  str token = str_scanner_nexttoken(scan);
+  scan.cursor -= token.len;
+  return token;
+}
+
 str str_scanner_takeuntil_nextline(str_scanner* scan) {
   str ret = str_scanner_takeuntil(scan, '\n');
   str_scanner_skipnext(scan);
@@ -148,7 +157,6 @@ str IVL_DELAY_SELECTION_NAMES[] = {
 size_t N_IVL_DELAY_SELECTION = sizeof(IVL_DELAY_SELECTION_NAMES) / sizeof(str);
 
 typedef struct {
-  bool direction;
   int32_t precision;
 } vpi_time_precision;
 
@@ -182,10 +190,49 @@ typedef struct {
   int32_t minor;
 } timescale;
 
-typedef struct {
-  str scope_name;
+#define X_SCOPE_TYPES() \
+  XSTS(module), \
+  XSTS(autofunction), \
+  XSTS(function), \
+  XSTS(autotask), \
+  XSTS(task), \
+  XSTS(begin), \
+  XSTS(fork), \
+  XSTS(autobegin), \
+  XSTS(autofork), \
+  XSTS(generate)
+
+#define XSTS(t) SCOPE_TYPE_##t
+
+typedef enum {
+  X_SCOPE_TYPES()
+} VPI_SCOPE_TYPE;
+
+#undef XSTS
+
+#define XSTS(t) STR_CONST(t)
+
+str VPI_SCOPE_NAMES[] = {
+  X_SCOPE_TYPES()
+};
+
+size_t N_VPI_SCOPE_TYPE = sizeof(VPI_SCOPE_NAMES)/sizeof(str);
+
+#undef XSTS
+
+typedef struct _vpi_scope {
+  str name;
+  size_t scope_id;
+  str type_name;
+  size_t line;
+  str file;
+  size_t def_line;
+  str def_file;
+  struct _vpi_scope* parent;
   timescale ts;
   port_info* ports;
+  VPI_SCOPE_TYPE scope_type;
+  bool is_cell;
 } vpi_scope;
 
 typedef struct {
@@ -284,11 +331,11 @@ IVLP_PARSE_FN(vpi_time_precision) {
   str mag = str_scanner_nexttoken(scan);
 
   int imag = atoi(mag.str);
+  bool positive = str_equal(dir, STR_CONST(+)) ? true : false;
 
-  mod->time_precision.direction = str_equal(dir, STR_CONST(+)) ? true : false;
-  mod->time_precision.precision = imag;
+  mod->time_precision.precision = imag * (positive ? 1 : -1);
 
-  printf("Found time precision: %d | %d\n", mod->time_precision.direction, mod->time_precision.precision);
+  printf("Found time precision: %d\n", mod->time_precision.precision);
 }
 
 struct {
@@ -317,9 +364,14 @@ struct {
   }
 };
 
-vvp_module bytecode_chunk_str(str bytecode, crena_arena* arena) {
+size_t get_scope_id_from_str(str scopeid) {
+  return strtoll(scopeid.str + 2, NULL, 0);
+}
+
+vvp_module parse_vvp_module(str bytecode, crena_arena* arena) {
   vvp_module ret = {0};
 
+  // Header parsing
   for (size_t i = 0; i < sizeof(ident_parsers) / sizeof(ident_parsers[0]); i ++) {
     if (ident_parsers[i].ini_fn) ident_parsers[i].ini_fn(&ret, arena);
 
@@ -344,6 +396,92 @@ vvp_module bytecode_chunk_str(str bytecode, crena_arena* arena) {
     if (ident_parsers[i].fin_fn) ident_parsers[i].fin_fn(&ret, arena);
   }
 
+  crena_da_init(ret.scopes, arena);
+  // Scope parsing
+  // Stage 1: Find all scopes
+  str_scanner ss1 = str_scanner_init(bytecode);
+  while (str_scanner_more(ss1)) {
+    // grab token
+    str ident = str_scanner_nexttoken(&ss1);
+
+    str type = str_scanner_nexttoken(&ss1);
+    if (str_equal(type, STR_CONST(.scope))) {
+      // we are a scope declaration
+      vpi_scope scope = {0};
+      str scopetype = str_scanner_nexttoken(&ss1);
+      scope.name = str_scanner_nexttoken(&ss1);
+      scope.type_name = str_scanner_nexttoken(&ss1);
+      scope.scope_id = get_scope_id_from_str(ident);
+
+      str sfile = str_scanner_nexttoken(&ss1);
+      str sline = str_scanner_nexttoken(&ss1);
+
+      scope.file = ret.file_names[atoi(sfile.str)];
+      scope.line = atoi(sline.str);
+
+      for (size_t i = 0; i < N_VPI_SCOPE_TYPE; i ++) {
+        if (str_equal(scopetype, VPI_SCOPE_NAMES[i])) {
+          scope.scope_type = (VPI_SCOPE_TYPE)i;
+          break;
+        }
+      }
+
+      if (str_back(sline) != ';') {
+        // We are not a root scope
+        str sdeffile = str_scanner_nexttoken(&ss1);
+        str sdefline = str_scanner_nexttoken(&ss1);
+        scope.def_file = ret.file_names[atoi(sdeffile.str)];
+        scope.def_line = atoi(sdefline.str);
+
+        str siscell = str_scanner_nexttoken(&ss1);
+
+        scope.is_cell = atoi(siscell.str) > 0;
+
+        str sparent = str_scanner_nexttoken(&ss1);
+
+        size_t pid = get_scope_id_from_str(sparent);
+
+        for (size_t i = 0; i < crena_da_len(ret.scopes); i ++) {
+          if (ret.scopes[i].scope_id == pid) {
+            scope.parent = &ret.scopes[i];
+            break;
+          }
+        }
+      }
+
+      //TODO: Probably some defensive programming here
+      str_scanner_nexttoken(&ss1);
+      str smajor = str_scanner_nexttoken(&ss1);
+      str sminor = str_scanner_nexttoken(&ss1);
+      scope.ts.major = atoi(smajor.str);
+      scope.ts.minor = atoi(sminor.str);
+
+      while (1) {
+        str port_info_ident = str_scanner_nexttoken(&ss1);
+        if (!str_equal(port_info_ident, STR_CONST(.port_info))) {
+          ss1.cursor -= port_info_ident.len;
+          break;
+        }
+
+        // TODO: find memory order of these guys
+        str spnum = str_scanner_nexttoken(&ss1);
+        str ptype = str_scanner_nexttoken(&ss1);
+        str swidth = str_scanner_nexttoken(&ss1);
+        str pname = str_scanner_nexttoken(&ss1);
+      }
+
+      crena_da_push(ret.scopes, scope);
+    } else {
+      str_scanner_skipuntil_nextline(&ss1);
+    }
+  }
+
+  crena_da_compress(ret.scopes);
+
+  for (size_t i = 0; i < crena_da_len(ret.scopes); i ++) {
+    printf("Found a scope: %.*s\n", STR_PF(ret.scopes[i].name));
+  }
+
   return ret;
 }
 
@@ -353,7 +491,7 @@ int main(int argc, char** argv) {
   crena_arena parse_arena = crena_init_growing();
   if (argc > 1) {
     str bytecode_str = read_entire_file(argv[1], &parse_arena);
-    bytecode_chunk_str(bytecode_str, &parse_arena);
+    parse_vvp_module(bytecode_str, &parse_arena);
   }
 }
 
