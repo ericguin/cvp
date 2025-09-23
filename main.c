@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include <stdarg.h>
+#include <assert.h>
 
 #define CRENA_IMPLEMENTATION
 #ifdef UNIT_TEST
@@ -110,10 +111,9 @@ str str_scanner_nexttoken(str_scanner* scan) {
   }
 }
 
-str str_scanner_peektoken(str_scanner* scan) {
-  str token = str_scanner_nexttoken(scan);
-  scan.cursor -= token.len;
-  return token;
+void str_scanner_pushtoken(str_scanner* scan, str token) {
+  assert(token.str == (scan->base.str + (scan->cursor - token.len)));
+  scan->cursor -= token.len;
 }
 
 str str_scanner_takeuntil_nextline(str_scanner* scan) {
@@ -172,11 +172,27 @@ typedef struct {
   int64_t driver_id;
 } signal;
 
+#define X_PORT_DIRECTION() \
+  XPDR(INPUT),\
+  XPDR(OUTPUT),\
+  XPDR(INOUT)
+
+#define XPDR(n) PORT_DIRECTION_##n
+
 typedef enum {
-  PORT_DIRECTION_INPUT,
-  PORT_DIRECTION_OUTPUT,
-  PORT_DIRECTION_INOUT
+  X_PORT_DIRECTION()
 } port_direction;
+
+#undef XPDR
+#define XPDR(n) STR_CONST(n)
+
+str PORT_DIRECTION_NAMES[] = {
+  X_PORT_DIRECTION()
+};
+
+#undef XPDR
+
+size_t N_PORT_DIRECTION = sizeof(PORT_DIRECTION_NAMES) / sizeof(str);
 
 typedef struct {
   size_t index;
@@ -399,6 +415,8 @@ vvp_module parse_vvp_module(str bytecode, crena_arena* arena) {
   crena_da_init(ret.scopes, arena);
   // Scope parsing
   // Stage 1: Find all scopes
+  // and parse the basic information
+  // Port info will be done in stage 2
   str_scanner ss1 = str_scanner_init(bytecode);
   while (str_scanner_more(ss1)) {
     // grab token
@@ -456,30 +474,59 @@ vvp_module parse_vvp_module(str bytecode, crena_arena* arena) {
       scope.ts.major = atoi(smajor.str);
       scope.ts.minor = atoi(sminor.str);
 
-      while (1) {
-        str port_info_ident = str_scanner_nexttoken(&ss1);
-        if (!str_equal(port_info_ident, STR_CONST(.port_info))) {
-          ss1.cursor -= port_info_ident.len;
-          break;
-        }
 
-        // TODO: find memory order of these guys
-        str spnum = str_scanner_nexttoken(&ss1);
-        str ptype = str_scanner_nexttoken(&ss1);
-        str swidth = str_scanner_nexttoken(&ss1);
-        str pname = str_scanner_nexttoken(&ss1);
+      str port_info_ident = str_scanner_nexttoken(&ss1);
+      if (str_equal(port_info_ident, STR_CONST(.port_info))) {
+        str_scanner_pushtoken(&ss1, port_info_ident);
+        size_t ports_start = ss1.cursor;
+        scope.ports = (port_info*)ports_start; // Cursed, but let's store the start location of ports in the pointer
       }
 
       crena_da_push(ret.scopes, scope);
-    } else {
-      str_scanner_skipuntil_nextline(&ss1);
     }
+
+    str_scanner_skipuntil_nextline(&ss1);
   }
 
   crena_da_compress(ret.scopes);
 
+  // Stage 2: Process port info on scopes
+  for (size_t i = 0; i < crena_da_len(ret.scopes); i ++) {
+    str_scanner scope_scan = str_scanner_init(bytecode);
+    scope_scan.cursor = (size_t)ret.scopes[i].ports; // hehe un_curse
+    crena_da_init(ret.scopes[i].ports, arena);
+    if (scope_scan.cursor) {
+      while (1) {
+        str port_info_ident = str_scanner_nexttoken(&scope_scan);
+        if (!str_equal(port_info_ident, STR_CONST(.port_info))) {
+          str_scanner_pushtoken(&scope_scan, port_info_ident);
+          break;
+        }
+
+        // TODO: find memory order of these guys
+        str spnum = str_scanner_nexttoken(&scope_scan);
+        str ptype = str_scanner_nexttoken(&scope_scan);
+        str swidth = str_scanner_nexttoken(&scope_scan);
+        str pname = str_scanner_nexttoken(&scope_scan);
+
+        port_info inf = {0};
+        inf.index = atoi(spnum.str);
+        for (size_t pt = 0; pt < N_PORT_DIRECTION; pt ++) {
+          if (str_equal(ptype, PORT_DIRECTION_NAMES[pt])) {
+            inf.direction = (port_direction)pt;
+          }
+        }
+        inf.width = atoi(swidth.str);
+        inf.name = pname;
+        crena_da_push(ret.scopes[i].ports, inf);
+      }
+    }
+    crena_da_compress(ret.scopes[i].ports);
+  }
+
   for (size_t i = 0; i < crena_da_len(ret.scopes); i ++) {
     printf("Found a scope: %.*s\n", STR_PF(ret.scopes[i].name));
+    printf("The scope has %ld ports\n", crena_da_len(ret.scopes[i].ports));
   }
 
   return ret;
