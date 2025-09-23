@@ -519,6 +519,7 @@ vvp_module parse_vvp_module(str bytecode, crena_arena* arena) {
         inf.width = atoi(swidth.str);
         inf.name = pname;
         crena_da_push(ret.scopes[i].ports, inf);
+        str_scanner_skipuntil_nextline(&scope_scan);
       }
     }
     crena_da_compress(ret.scopes[i].ports);
@@ -528,6 +529,8 @@ vvp_module parse_vvp_module(str bytecode, crena_arena* arena) {
     printf("Found a scope: %.*s\n", STR_PF(ret.scopes[i].name));
     printf("The scope has %ld ports\n", crena_da_len(ret.scopes[i].ports));
   }
+
+  // Finally, let's grab the nets, vars, and functors
 
   return ret;
 }
