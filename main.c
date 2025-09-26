@@ -160,10 +160,82 @@ typedef struct {
   int32_t precision;
 } vpi_time_precision;
 
+#define X_STATEMENT_TYPE() \
+  XSTMTT(net),\
+  XSTMTT(var),\
+  XSTMTT(functor),\
+  XSTMTT(param),\
+  XSTMTT(dff),\
+  XSTMTT(latch),\
+  XSTMTT(cast),\
+  XSTMTT(delay),\
+  XSTMTT(array),\
+  XSTMTT(event),\
+  XSTMTT(resolv),\
+  XSTMTT(part),\
+  XSTMTT(concat),\
+  XSTMTT(repeat),\
+  XSTMTT(substitute),\
+  XSTMTT(reduce),\
+  XSTMTT(expand),\
+  XSTMTT(force),\
+  XSTMTT(arith),\
+  XSTMTT(cmp),\
+  XSTMTT(shift),\
+
+#define XSTMTT(t) SIGNAL_TYPE_##t
+
 typedef enum {
-  SIGNAL_TYPE_NET,
-  SIGNAL_TYPE_VAR
-} signal_type;
+  X_STATEMENT_TYPE()
+} statement_type;
+
+#undef XSTMTT
+#define XSTMTT(t) STR_CONST(.t)
+
+str SIGNAL_TYPE_NAMES[] = {
+  X_STATEMENT_TYPE()
+};
+
+#undef XSTMTT
+
+size_t N_SIGNAL_TYPE = sizeof(SIGNAL_TYPE_NAMES) / sizeof(str);
+
+#define X_VARNET_TYPE() \
+  XVNT(s),\
+  XVNT(2u),\
+  XVNT(2s),\
+  XVNT(real),\
+  XVNT(i),\
+  XVNT(str)
+
+#define XVNT(t) VARNET_TYPE_##t
+
+typedef enum {
+  X_VARNET_TYPE(),
+  VARNET_TYPE_NONE
+} varnet_type;
+
+#undef XVNT
+
+#define XVNT(t) STR_CONST(t)
+
+str VARNET_TYPE_NAMES[] = {
+  X_VARNET_TYPE()
+};
+
+size_t N_VARNET_TYPE = sizeof(VARNET_TYPE_NAMES) / sizeof(str);
+
+typedef struct {
+  str name;
+  int msb;
+  int lsb;
+  varnet_type type;
+  size_t driver;
+} signal_type_varnet;
+
+typedef struct {
+
+} signal_type_functor;
 
 typedef struct {
   str name;
